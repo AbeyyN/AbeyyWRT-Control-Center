@@ -3,17 +3,17 @@ $ProgressPreference = 'SilentlyContinue'
 
 $Repo = 'AbeyyN/OpenWRT---AbeyyWRT'
 $Issue = 10
-$CommandPath = 'ops/arca-agent-command.json'
 $Key = Join-Path $env:USERPROFILE '.ssh\arca_bridge'
 
 Write-Host ''
 Write-Host '=============================================' -ForegroundColor Cyan
-Write-Host ' ABEYYWRT ARCA LIVE AGENT' -ForegroundColor Cyan
+Write-Host ' ABEYYWRT ARCA LIVE AGENT V2' -ForegroundColor Cyan
 Write-Host ' Direct laptop -> 192.168.1.1' -ForegroundColor Cyan
+Write-Host ' GitHub Issue control channel' -ForegroundColor Cyan
 Write-Host '=============================================' -ForegroundColor Cyan
 
 if (-not (Get-Command gh.exe -ErrorAction SilentlyContinue)) {
-    throw 'GitHub CLI (gh) missing. Run the Arca bridge bootstrap first.'
+    throw 'GitHub CLI (gh) missing.'
 }
 
 & gh auth status --hostname github.com 2>$null
@@ -25,12 +25,8 @@ if (-not (Test-Path $Key)) {
     throw "Arca SSH key missing: $Key"
 }
 
-# Stop the stuck GitHub Actions worker/listener from holding SSH child processes.
-Get-Process -Name 'Runner.Worker','Runner.Listener' -ErrorAction SilentlyContinue |
-    Stop-Process -Force -ErrorAction SilentlyContinue
 Get-Process -Name 'ssh' -ErrorAction SilentlyContinue |
     Stop-Process -Force -ErrorAction SilentlyContinue
-Start-Sleep -Seconds 2
 
 if (-not (Get-Module -ListAvailable -Name Posh-SSH)) {
     Write-Host 'Installing Posh-SSH / SSH.NET once...' -ForegroundColor Yellow
@@ -42,6 +38,7 @@ Import-Module Posh-SSH -Force
 $Secure = New-Object System.Security.SecureString
 $Cred = New-Object System.Management.Automation.PSCredential('root', $Secure)
 $LastId = -1
+$LastPollWarning = ''
 
 function Post-AgentResult {
     param(
@@ -56,7 +53,7 @@ function Post-AgentResult {
     }
 
     $Body = @"
-### Arca agent result #$Id — $Status
+### Arca agent V2 result #$Id — $Status
 
 ``````text
 $Text
@@ -66,14 +63,28 @@ $Text
     $Tmp = Join-Path $env:TEMP 'arca-agent-result.md'
     [IO.File]::WriteAllText($Tmp, $Body, [Text.UTF8Encoding]::new($false))
     & gh issue comment $Issue --repo $Repo --body-file $Tmp 2>$null | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw 'Failed to post result to GitHub Issue.' }
 }
 
 function Get-AgentCommand {
-    $RawB64 = (& gh api "repos/$Repo/contents/$CommandPath" --jq '.content' 2>$null) -join ''
-    if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($RawB64)) { return $null }
-    $RawB64 = $RawB64 -replace '\s',''
-    $Json = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($RawB64))
-    return ($Json | ConvertFrom-Json)
+    $Body = (& gh issue view $Issue --repo $Repo --json body --jq '.body' 2>$null) -join "`n"
+    if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($Body)) { return $null }
+
+    $mId = [regex]::Match($Body, '(?m)^id=(\d+)\s*$')
+    $mTimeout = [regex]::Match($Body, '(?m)^timeout=(\d+)\s*$')
+    $mCmd = [regex]::Match($Body, '(?m)^command_b64=([A-Za-z0-9+/=]+)\s*$')
+    if (-not $mId.Success -or -not $mCmd.Success) { return $null }
+
+    $Id = [int]$mId.Groups[1].Value
+    $Timeout = 30
+    if ($mTimeout.Success) { $Timeout = [Math]::Max(5,[Math]::Min(180,[int]$mTimeout.Groups[1].Value)) }
+    $Command = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($mCmd.Groups[1].Value))
+
+    [pscustomobject]@{
+        id = $Id
+        timeout = $Timeout
+        command = $Command
+    }
 }
 
 function Invoke-ArcaCommand {
@@ -99,13 +110,14 @@ function Invoke-ArcaCommand {
     }
 }
 
-Write-Host 'Agent online. Keep this PowerShell window open.' -ForegroundColor Green
-Write-Host 'You do not need to type router commands anymore.' -ForegroundColor Green
-Post-AgentResult -Id 0 -Status 'ONLINE' -Text "Agent started on $env:COMPUTERNAME as $env:USERNAME. Key=$Key"
+Write-Host 'Agent V2 online. Keep this PowerShell window open.' -ForegroundColor Green
+Write-Host 'No more router commands need to be typed manually.' -ForegroundColor Green
+Post-AgentResult -Id 0 -Status 'ONLINE' -Text "Agent V2 started on $env:COMPUTERNAME as $env:USERNAME. Key=$Key"
 
 while ($true) {
     try {
         $Job = Get-AgentCommand
+        $LastPollWarning = ''
         if ($null -ne $Job) {
             $Id = [int]$Job.id
             if ($Id -ne $LastId) {
@@ -115,8 +127,7 @@ while ($true) {
                     break
                 }
 
-                $Timeout = 30
-                if ($null -ne $Job.timeout) { $Timeout = [Math]::Max(5,[Math]::Min(180,[int]$Job.timeout)) }
+                $Timeout = [int]$Job.timeout
                 Write-Host "Executing command #$Id (timeout ${Timeout}s)..." -ForegroundColor Cyan
 
                 try {
@@ -126,16 +137,20 @@ while ($true) {
                 }
                 catch {
                     $Msg = $_ | Out-String
-                    Post-AgentResult -Id $Id -Status 'ERROR' -Text $Msg
+                    try { Post-AgentResult -Id $Id -Status 'ERROR' -Text $Msg } catch {}
                     Write-Host "Command #$Id error: $($_.Exception.Message)" -ForegroundColor Red
                 }
             }
         }
     }
     catch {
-        Write-Host "Agent poll warning: $($_.Exception.Message)" -ForegroundColor DarkYellow
+        $Msg = $_.Exception.Message
+        if ($Msg -ne $LastPollWarning) {
+            Write-Host "Agent poll warning: $Msg" -ForegroundColor DarkYellow
+            $LastPollWarning = $Msg
+        }
     }
     Start-Sleep -Seconds 3
 }
 
-Write-Host 'Arca Live Agent stopped.' -ForegroundColor Yellow
+Write-Host 'Arca Live Agent V2 stopped.' -ForegroundColor Yellow
