@@ -1,64 +1,34 @@
-# luci-app-abeyywrt
+# AbeyyWRT Control Center
 
-AbeyyWRT Control Center for Arcadyan AW1000.
+Official public download repository for **luci-app-abeyywrt** — the AbeyyWRT LuCI control center for Arcadyan AW1000.
 
-One LuCI application containing:
+This repository is intentionally **distribution-only**. Public releases contain the installable package and checksums; development source remains in the private firmware repository.
 
-- **Dashboard** — live WAN, CPU, RAM, storage, RX/TX throughput and latency telemetry.
-- **Topology** — existing AbeyyWRT LAN/inferred-device view plus real Wi-Fi association detection using `iwinfo` with an `iw`/nl80211 fallback.
-- **Performance** — functional SQM/CAKE ↔ NSS/ECM runtime switch with actual kernel/runtime detection.
+## Included modules
 
-## Compatibility
+- **Dashboard** — live CPU, RAM, storage, WAN, RX/TX throughput and latency telemetry.
+- **Topology** — LAN/inferred-device view with real Wi-Fi association detection and `iw`/nl80211 fallback.
+- **Performance** — functional SQM/CAKE ↔ NSS/ECM runtime switching with capability detection.
 
-The package itself is architecture-independent (`all`) and is designed for Arcadyan AW1000 OpenWrt builds.
+## Download
 
-Dashboard and Topology work without NSS. The Performance page detects capabilities at runtime:
+Use the **Releases** section of this repository and download the package matching your OpenWrt generation:
 
-- SQM controls are available only when SQM is installed/configured.
-- NSS/ECM controls are available only when the running firmware provides the matching QCA NSS driver, ECM module and NSS frontend.
+- `luci-app-abeyywrt-*.apk` — current apk-based OpenWrt releases.
+- `luci-app-abeyywrt_*.ipk` — older opkg-based OpenWrt releases, when provided.
+- `SHA256SUMS` — checksum file for release verification.
 
-The package does **not** install or force kernel NSS modules, so installing it on a non-NSS AW1000 does not replace the kernel or network datapath.
+## Install
 
-## Build inside an AW1000 firmware tree
+### Current OpenWrt (`apk`)
 
-Copy or clone this directory to:
-
-```text
-package/abeyywrt/luci-app-abeyywrt
-```
-
-Then enable:
-
-```text
-CONFIG_PACKAGE_luci-app-abeyywrt=y
-```
-
-and build normally.
-
-Example:
-
-```sh
-make menuconfig
-make -j$(nproc)
-```
-
-For package-only compilation from an already prepared OpenWrt tree:
-
-```sh
-make package/luci-app-abeyywrt/compile V=s
-```
-
-The resulting installable package is emitted under `bin/packages/.../luci/` (package format depends on the OpenWrt release: `.apk` on current apk-based releases, `.ipk` on older opkg-based releases).
-
-## Install a prebuilt package
-
-Current apk-based OpenWrt:
+Copy the downloaded package to the router and run:
 
 ```sh
 apk add --allow-untrusted ./luci-app-abeyywrt-*.apk
 ```
 
-Older opkg-based OpenWrt:
+### Older OpenWrt (`opkg`)
 
 ```sh
 opkg install ./luci-app-abeyywrt_*.ipk
@@ -67,11 +37,32 @@ opkg install ./luci-app-abeyywrt_*.ipk
 After installation, reopen LuCI and use:
 
 ```text
-AbeyyWRT > Dashboard
-AbeyyWRT > Topology
-AbeyyWRT > Performance
+AbeyyWRT
+├── Dashboard
+├── Topology
+└── Performance
 ```
 
-## Runtime safety
+## Compatibility
 
-The Performance Engine treats SQM/CAKE and NSS/ECM as mutually exclusive managed modes. It does not download arbitrary kmods or bypass kernel ABI checks.
+The LuCI package is architecture-independent (`all`) and is designed for Arcadyan AW1000 OpenWrt firmware.
+
+Dashboard and Topology do not require NSS. Performance detects available acceleration/runtime components automatically:
+
+- SQM controls are enabled only when SQM is available.
+- NSS/ECM controls are enabled only when the running firmware provides the required QCA NSS/ECM runtime.
+- The package does not install or force kernel NSS modules and does not replace the router kernel/network datapath.
+
+## Verify download
+
+When `SHA256SUMS` is included in the release:
+
+```sh
+sha256sum -c SHA256SUMS
+```
+
+## Versioning
+
+Public releases follow semantic versioning, beginning with **AbeyyWRT Control Center v1.0.0**.
+
+Maintained by **AbeyyTechXy**.
