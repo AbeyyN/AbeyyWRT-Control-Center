@@ -4,11 +4,13 @@ $ProgressPreference = 'SilentlyContinue'
 $Repo = 'AbeyyN/OpenWRT---AbeyyWRT'
 $Issue = 10
 $Key = Join-Path $env:USERPROFILE '.ssh\arca_bridge'
+$Targets = @('192.168.1.1','100.85.154.66')
 
 Write-Host ''
 Write-Host '=============================================' -ForegroundColor Cyan
 Write-Host ' ABEYYWRT ARCA LIVE AGENT V2' -ForegroundColor Cyan
-Write-Host ' Direct laptop -> 192.168.1.1' -ForegroundColor Cyan
+Write-Host ' LAN first + Tailscale fallback' -ForegroundColor Cyan
+Write-Host ' Stock-QMI destructive commands HARD BLOCKED' -ForegroundColor Green
 Write-Host ' GitHub Issue control channel' -ForegroundColor Cyan
 Write-Host '=============================================' -ForegroundColor Cyan
 
@@ -87,32 +89,65 @@ function Get-AgentCommand {
     }
 }
 
+function Test-ArcaCommandSafety {
+    param([string]$Command)
+
+    # AbeyyWRT modem ownership is immutable by policy:
+    # RG500Q-EA -> quectel-CM-M -> RAW-IP wwan0.  Stock netifd/uqmi must never
+    # be allowed to start a competing data session or power-cycle the SIM.
+    $Forbidden = @(
+        '(?is)uci\s+(?:-q\s+)?set\s+network\.wwan\.proto\s*=\s*["'']?qmi',
+        '(?im)(^|[;&|]\s*)ifup\s+wwan(?:\s|$)',
+        '(?im)(^|\s)uqmi(?:\s|$)',
+        '(?i)qmi_wwan/(?:un)?bind',
+        '(?i)--uim-power-(?:off|on)'
+    )
+    foreach ($Pattern in $Forbidden) {
+        if ($Command -match $Pattern) {
+            return "BLOCKED_BY_ARCA_MODEM_SAFETY_GATE pattern=$Pattern"
+        }
+    }
+    return $null
+}
+
 function Invoke-ArcaCommand {
     param([string]$Command,[int]$Timeout)
 
-    $Session = $null
-    try {
-        $Session = @(New-SSHSession -ComputerName '192.168.1.1' -Credential $Cred -KeyFile $Key -AcceptKey -Force -ConnectionTimeout 8 -ErrorAction Stop)[0]
-        if ($null -eq $Session -or -not $Session.Connected) {
-            throw 'SSH.NET did not establish a session.'
+    $Safety = Test-ArcaCommandSafety -Command $Command
+    if ($Safety) { throw $Safety }
+
+    $Errors = @()
+    foreach ($Target in $Targets) {
+        $Session = $null
+        try {
+            Write-Host "Trying ARCA target $Target..." -ForegroundColor DarkCyan
+            $Session = @(New-SSHSession -ComputerName $Target -Credential $Cred -KeyFile $Key -AcceptKey -Force -ConnectionTimeout 8 -ErrorAction Stop)[0]
+            if ($null -eq $Session -or -not $Session.Connected) {
+                throw 'SSH.NET did not establish a session.'
+            }
+            $Result = Invoke-SSHCommand -SSHSession $Session -Command $Command -TimeOut $Timeout -ErrorAction Stop
+            $Out = @("ARCA_TARGET=$Target")
+            if ($Result.Output) { $Out += $Result.Output }
+            if ($Result.Error) { $Out += ($Result.Error | ForEach-Object { "STDERR: $_" }) }
+            $Out += "REMOTE_EXIT=$($Result.ExitStatus)"
+            return ($Out -join "`n")
         }
-        $Result = Invoke-SSHCommand -SSHSession $Session -Command $Command -TimeOut $Timeout -ErrorAction Stop
-        $Out = @()
-        if ($Result.Output) { $Out += $Result.Output }
-        if ($Result.Error) { $Out += ($Result.Error | ForEach-Object { "STDERR: $_" }) }
-        $Out += "REMOTE_EXIT=$($Result.ExitStatus)"
-        return ($Out -join "`n")
-    }
-    finally {
-        if ($null -ne $Session) {
-            Remove-SSHSession -SSHSession $Session -ErrorAction SilentlyContinue | Out-Null
+        catch {
+            $Errors += "$Target => $($_.Exception.Message)"
+        }
+        finally {
+            if ($null -ne $Session) {
+                Remove-SSHSession -SSHSession $Session -ErrorAction SilentlyContinue | Out-Null
+            }
         }
     }
+    throw ('All ARCA targets failed: ' + ($Errors -join ' | '))
 }
 
 Write-Host 'Agent V2 online. Keep this PowerShell window open.' -ForegroundColor Green
 Write-Host 'No more router commands need to be typed manually.' -ForegroundColor Green
-Post-AgentResult -Id 0 -Status 'ONLINE' -Text "Agent V2 started on $env:COMPUTERNAME as $env:USERNAME. Key=$Key"
+Write-Host 'Safety: stock QMI/uqmi/SIM power-cycle commands are rejected.' -ForegroundColor Green
+Post-AgentResult -Id 0 -Status 'ONLINE' -Text "Agent V2 started on $env:COMPUTERNAME as $env:USERNAME. Targets=$($Targets -join ','). Stock-QMI safety gate=ON. Key=$Key"
 
 while ($true) {
     try {
